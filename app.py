@@ -132,7 +132,7 @@ def process_video(video_path, tracker_name, progress_bar):
     # Video writer (try browser-friendly codecs)
     out_path = TEMP_DIR / f"{tracker_name}_{Path(video_path).stem}.mp4"
     writer = None
-    for codec in ['avc1', 'mp4v', 'XVID', 'MJPG']:
+    for codec in ['VP80', 'avc1', 'mp4v', 'XVID', 'MJPG']:
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
         if writer.isOpened():

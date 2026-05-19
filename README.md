@@ -8,7 +8,6 @@ A Streamlit application for real-time chicken tracking using YOLOv8n and modern 
 - Choose from three trackers: ByteTrack, OC-SORT, BoT-SORT
 - Side-by-side display of original and processed video
 - Live chicken count displayed on the processed video
-- Download the tracked video
 
 ## Installation
 

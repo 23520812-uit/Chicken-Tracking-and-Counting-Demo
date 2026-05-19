@@ -3,6 +3,10 @@ Chicken Tracking Demo – Streamlit Application
 Simple UI: select tracker, upload video -> automatic tracking with side-by-side view.
 No download – results are streamed directly.
 """
+import os
+# Lệnh này sẽ chạy ngầm để xóa bản OpenCV lỗi do Ultralytics tự tải về, 
+# ép hệ thống phải dùng bản opencv-python-headless ở trong requirements.txt
+os.system("pip uninstall -y opencv-python opencv-contrib-python")
 
 import streamlit as st
 import cv2

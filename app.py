@@ -151,10 +151,12 @@ def process_video(video_path, tracker_name, progress_bar):
         ok, frame = cap.read()
         if not ok:
             break
-
+        
+        DEVICE = "0" if torch.cuda.is_available() else "cpu"
+        
         # Detection
         results = detector.predict(frame, verbose=False, conf=DETECT_CONF,
-                                   iou=DETECT_IOU, imgsz=IMGSZ, device=0,
+                                   iou=DETECT_IOU, imgsz=IMGSZ, device=DEVICE,
                                    half=torch.cuda.is_available(), stream=False)
         if results[0].boxes is None or len(results[0].boxes) == 0:
             boxes = np.empty((0,4), dtype=float)

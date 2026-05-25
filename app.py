@@ -5,9 +5,25 @@ Simple UI: select module, upload video -> automatic tracking with side‑by‑si
 No frame limit – processes the entire video.
 Optimised for Streamlit Cloud (CPU, lightweight packages).
 """
-import os
-os.system("pip uninstall -y opencv-python opencv-python-headless")
-os.system("pip install opencv-python-headless")
+import subprocess
+import sys
+
+# ── Uninstall opencv‑python (comes with ultralytics) and install headless ──
+def _ensure_headless():
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-python-headless"],
+            check=False, capture_output=True
+        )
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "opencv-python-headless"],
+            check=True
+        )
+    except Exception:
+        # fallback: use whatever is already installed
+        pass
+
+_ensure_headless()
 
 import streamlit as st
 import cv2

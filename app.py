@@ -345,17 +345,14 @@ def process_video(video_path, module_name, progress_bar):
                         cross_states[disp_id] = curr_side
 
         # TVM filtering
-        all_tracked = tracked_boxes  # keep original for visualisation
+        all_tracked = tracked_boxes  
         if tvm is not None:
             validated = tvm.filter(all_tracked)
             accepted = len(validated)
             rejected = len(all_tracked) - accepted
-            # Redraw counting based on validated tracks
-            current_count = 0
-            counted_ids.clear()
-            cross_states.clear()
+
             for x1, y1, x2, y2, disp_id in validated:
-                cx = (x1+x2)/2.0
+                cx = (x1 + x2) / 2.0
                 curr_side = cx > line_x
                 if disp_id not in cross_states:
                     cross_states[disp_id] = curr_side
@@ -365,7 +362,8 @@ def process_video(video_path, module_name, progress_bar):
                         counted_ids.add(disp_id)
                         current_count = len(counted_ids)
                     cross_states[disp_id] = curr_side
-            tracked_boxes = validated
+
+            tracked_boxes = validated      
         else:
             accepted = rejected = 0
 
@@ -410,6 +408,12 @@ def process_video(video_path, module_name, progress_bar):
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, thick)
 
         cv2.line(frame, (line_x, 0), (line_x, h), (0, 0, 255), 3)
+        if module_name == "CL‑ID":
+            if pred_rows:
+                temp_df = pd.DataFrame(pred_rows, columns=["frame","id","x","y","w","h","conf"])
+                current_count = count_crossings_filtered(temp_df, line_x, min_length=5)
+            else:
+                current_count = 0
         cv2.putText(frame, f"{module_name} | Cross Count: {current_count}",
                     (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
         writer.write(frame)

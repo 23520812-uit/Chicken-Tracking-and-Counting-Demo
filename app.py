@@ -257,7 +257,7 @@ def process_video(video_path, module_name, progress_bar):
 
     out_path = TEMP_DIR / f"{module_name}_{Path(video_path).stem}.mp4"
     writer = None
-    for codec in ['avc1', 'mp4v']:
+    for codec in ['mp4v', 'XVID', 'MJPG']:
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
         if writer.isOpened():

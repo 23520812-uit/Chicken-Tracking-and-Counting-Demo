@@ -1,7 +1,9 @@
 """
-Chicken Tracking Demo – Streamlit Application
+Chicken Tracking & Counting Demo – Streamlit Application
 Refinement modules: BGD, CL‑ID, TVM
-Simple UI: select module, upload video -> automatic tracking with side-by-side view.
+Simple UI: select module, upload video -> automatic tracking with side‑by‑side view.
+No frame limit – processes the entire video.
+Optimised for Streamlit Cloud (CPU, lightweight packages).
 """
 import streamlit as st
 import cv2
@@ -38,72 +40,89 @@ WEIGHTS_PATH = APP_DIR / "weights" / "best.pt"
 TEMP_DIR = Path(tempfile.gettempdir()) / "chicken_tracking_demo"
 TEMP_DIR.mkdir(exist_ok=True, parents=True)
 
-MAX_FRAMES = 600
+MAX_FRAMES = None          # process entire video, no limit
 DETECT_CONF = 0.12
 DETECT_IOU  = 0.50
 IMGSZ = 640
 
 # ============================================================
-# REFINEMENT MODULES
+# REFINEMENT MODULES (latest versions with visualisation)
 # ============================================================
 
-class DirectionalBGD:
-    """Bidirectional Birth‑Growth‑Death tracker wrapper."""
-    def __init__(self, base_tracker, birth_conf=0.35, death_margin=70):
+class TwoWaySmartLineBGD:
+    """
+    Two‑way BGD with birth mask and death at zone boundaries.
+    - Birth: new tracks only accepted if first position is outside the growth zone.
+    - Death: track removed when centre leaves the growth zone on the opposite side.
+    - Direction is locked based on first position.
+    """
+    def __init__(self, base_tracker, line_x, growth_offset=70, birth_conf=0.35):
         self.tracker = base_tracker
+        self.line_x = line_x
+        self.growth_offset = growth_offset
         self.birth_conf = birth_conf
-        self.death_margin = death_margin
-        self.img_w = None
+        self.known_tracks = set()
         self.track_history = defaultdict(list)
         self.locked_direction = {}
+        self.pending_x = {}
 
     def update(self, detections_xyxy, scores, frame=None):
-        if frame is not None and self.img_w is None:
-            self.img_w = frame.shape[1]
+        if frame is None:
+            return None
+        img_w = frame.shape[1]
+        left_bound  = self.line_x - self.growth_offset
+        right_bound = self.line_x + self.growth_offset
 
-        N = len(detections_xyxy)
-        birth_mask = scores >= self.birth_conf
-        modified_scores = scores.copy()
-        modified_scores[~birth_mask] = 0.0
-
-        dets = np.column_stack([detections_xyxy, modified_scores, np.zeros(N, dtype=np.int32)])
+        dets = np.column_stack([detections_xyxy, scores, np.zeros(len(scores), dtype=np.int32)])
         outputs = self.tracker.update(dets, frame)
 
+        valid = []
         if outputs is not None and len(outputs) > 0:
-            valid = []
             for out in outputs:
                 x1, y1, x2, y2, tid, conf, cls, *rest = out
-                cx = (x1+x2)/2
+                cx = (x1 + x2) / 2.0
                 self.track_history[tid].append(cx)
                 if len(self.track_history[tid]) > 10:
                     self.track_history[tid] = self.track_history[tid][-10:]
 
-                direction = self._get_direction(tid)
-                if direction == 'left' and cx > self.img_w - self.death_margin:
-                    continue
-                if direction == 'right' and cx < self.death_margin:
-                    continue
-                valid.append(out)
-            return valid
-        return outputs
+                if tid not in self.known_tracks:
+                    if left_bound <= cx <= right_bound:
+                        continue
+                    if cx < left_bound:
+                        self.locked_direction[tid] = 'left'
+                    else:
+                        self.locked_direction[tid] = 'right'
+                    self.known_tracks.add(tid)
 
-    def _get_direction(self, tid):
-        if tid in self.locked_direction:
-            return self.locked_direction[tid]
-        hist = self.track_history[tid]
-        if len(hist) < 2:
-            return 'left' if hist[0] < self.img_w/2 else 'right'
-        if len(hist) >= 15:
-            moves = np.diff(hist[-10:])
-            rightward = np.sum(moves > 0)
-            leftward = len(moves) - rightward
-            if rightward > leftward:
-                self.locked_direction[tid] = 'left'
+                direction = self.locked_direction.get(tid, 'left')
+                if direction == 'left' and cx > right_bound:
+                    continue
+                if direction == 'right' and cx < left_bound:
+                    continue
+
+                valid.append(out)
+
+        if outputs is not None:
+            for out in outputs:
+                self.known_tracks.add(out[4])
+
+        return valid if len(valid) > 0 else None
+
+    def register_death(self, display_id, cx, cy):
+        self.pending_x[display_id] = (cx, cy, 3)
+
+    def draw_pending_x(self, frame):
+        expired = []
+        for disp_id, (cx, cy, remaining) in self.pending_x.items():
+            cv2.circle(frame, (int(cx), int(cy)), 15, (0,0,255), 3)
+            cv2.putText(frame, "X", (int(cx)-10, int(cy)+5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            if remaining <= 1:
+                expired.append(disp_id)
             else:
-                self.locked_direction[tid] = 'right'
-            return self.locked_direction[tid]
-        first, last = hist[0], hist[-1]
-        return 'left' if last > first else 'right'
+                self.pending_x[disp_id] = (cx, cy, remaining-1)
+        for disp_id in expired:
+            del self.pending_x[disp_id]
 
 
 class TVMFilter:
@@ -129,7 +148,7 @@ class TVMFilter:
 
 
 def count_crossings_filtered(pred_df, line_x, min_length=5):
-    """CL‑ID: count only tracks that live long enough."""
+    """CL‑ID: count only tracks that live at least min_length frames."""
     if pred_df is None or pred_df.empty:
         return 0
     df = pred_df.copy()
@@ -196,28 +215,26 @@ def process_video(video_path, module_name, progress_bar):
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_budget = min(total_frames, MAX_FRAMES) if total_frames > 0 else MAX_FRAMES
+    frame_budget = total_frames if MAX_FRAMES is None else min(total_frames, MAX_FRAMES)
 
     line_x = w // 2
 
-    # Base ByteTrack tracker (same for all modules)
+    # Base ByteTrack (CPU‑friendly)
     base_tracker = BYTETracker(
         track_thresh=0.35, track_buffer=120, match_thresh=0.9, frame_rate=int(fps)
     )
 
-    # Apply the selected refinement module
+    # Apply module
     if module_name == "BGD":
-        tracker = DirectionalBGD(base_tracker, birth_conf=0.35, death_margin=70)
+        tracker = TwoWaySmartLineBGD(base_tracker, line_x=line_x, growth_offset=70, birth_conf=0.35)
     else:
-        tracker = base_tracker  # for CL‑ID and TVM we use vanilla ByteTrack + post‑processing
+        tracker = base_tracker
 
-    # For TVM we need a filter instance
     tvm = TVMFilter(max_sigma=30.0) if module_name == "TVM" else None
 
-    # Store predictions for CL‑ID (which does post‑processing)
+    # Prediction storage for CL‑ID
     pred_rows = []
 
-    # Video writer (try browser-friendly codecs)
     out_path = TEMP_DIR / f"{module_name}_{Path(video_path).stem}.mp4"
     writer = None
     for codec in ['avc1', 'mp4v']:
@@ -238,21 +255,26 @@ def process_video(video_path, module_name, progress_bar):
     id_map = {}
     next_disp_id = 1
 
+    # BGD zone boundaries (for visual lines)
+    growth_offset = 70
+    left_bound  = line_x - growth_offset
+    right_bound = line_x + growth_offset
+
     for frame_idx in range(frame_budget):
         ok, frame = cap.read()
         if not ok:
             break
 
-        # Detection
+        # Detection (CPU, no half precision)
         results = detector.predict(frame, verbose=False, conf=DETECT_CONF,
-                                   iou=DETECT_IOU, imgsz=IMGSZ, device=0,
-                                   half=torch.cuda.is_available(), stream=False)
+                                   iou=DETECT_IOU, imgsz=IMGSZ, device='cpu',
+                                   half=False, stream=False)
         if results[0].boxes is None or len(results[0].boxes) == 0:
             boxes = np.empty((0,4), dtype=float)
             confs = np.empty((0,), dtype=float)
         else:
-            boxes = results[0].boxes.xyxy.detach().cpu().numpy().astype(float)
-            confs = results[0].boxes.conf.detach().cpu().numpy().astype(float)
+            boxes = results[0].boxes.xyxy.cpu().numpy().astype(float)
+            confs = results[0].boxes.conf.cpu().numpy().astype(float)
 
         # NMS
         if len(boxes) > 0:
@@ -262,7 +284,7 @@ def process_video(video_path, module_name, progress_bar):
             boxes = boxes[keep.numpy()]
             confs = confs[keep.numpy()]
 
-        # Run tracker (with or without BGD wrapper)
+        # Tracker update
         if module_name == "BGD":
             outputs = tracker.update(boxes, confs, frame)
         else:
@@ -274,18 +296,15 @@ def process_video(video_path, module_name, progress_bar):
             for out in outputs:
                 x1, y1, x2, y2, tid, conf, cls, *rest = out
                 tid = int(tid)
-                # Map internal ID to display ID
                 if tid not in id_map:
                     id_map[tid] = next_disp_id
                     next_disp_id += 1
                 disp_id = id_map[tid]
                 tracked_boxes.append((x1, y1, x2, y2, disp_id))
 
-                # Store for CL‑ID
                 if module_name == "CL‑ID":
                     pred_rows.append([frame_idx+1, disp_id, x1, y1, x2-x1, y2-y1, conf])
 
-                # Bidirectional counting (live, for BGD and TVM)
                 if module_name != "CL‑ID":
                     cx = (x1 + x2) / 2.0
                     curr_side = cx > line_x
@@ -298,14 +317,17 @@ def process_video(video_path, module_name, progress_bar):
                             current_count = len(counted_ids)
                         cross_states[disp_id] = curr_side
 
-        # TVM filtering (post‑tracker)
+        # TVM filtering
+        all_tracked = tracked_boxes  # keep original for visualisation
         if tvm is not None:
-            tracked_boxes = tvm.filter(tracked_boxes)
-            # Update counting after filtering
+            validated = tvm.filter(all_tracked)
+            accepted = len(validated)
+            rejected = len(all_tracked) - accepted
+            # Redraw counting based on validated tracks
             current_count = 0
             counted_ids.clear()
             cross_states.clear()
-            for x1, y1, x2, y2, disp_id in tracked_boxes:
+            for x1, y1, x2, y2, disp_id in validated:
                 cx = (x1+x2)/2.0
                 curr_side = cx > line_x
                 if disp_id not in cross_states:
@@ -316,8 +338,50 @@ def process_video(video_path, module_name, progress_bar):
                         counted_ids.add(disp_id)
                         current_count = len(counted_ids)
                     cross_states[disp_id] = curr_side
+            tracked_boxes = validated
+        else:
+            accepted = rejected = 0
 
+        # ---- Draw visual elements ----
         frame = draw_tracks(frame, tracked_boxes, trajectories, unique_ids)
+
+        # BGD visual: three lines
+        if module_name == "BGD":
+            cv2.line(frame, (left_bound, 0), (left_bound, h), (0, 0, 0), 3)
+            cv2.line(frame, (line_x, 0), (line_x, h), (0, 0, 255), 3)
+            cv2.line(frame, (right_bound, 0), (right_bound, h), (0, 0, 0), 3)
+            cv2.putText(frame, "BIRTH / DEATH", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 1)
+            cv2.putText(frame, "COUNT", (line_x + 5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,255), 1)
+            cv2.putText(frame, "BIRTH / DEATH", (right_bound + 5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 1)
+            cv2.putText(frame, "GROWTH", (left_bound + 5, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 1)
+
+        # CL‑ID visual: short track counter + thickness
+        if module_name == "CL‑ID" and pred_rows:
+            temp_df = pd.DataFrame(pred_rows, columns=["frame","id","x","y","w","h","conf"])
+            track_lens = temp_df.groupby("id").size()
+            all_ids = set(track_lens.index)
+            valid_ids = set(track_lens[track_lens >= 5].index)
+            ignored_short = len(all_ids - valid_ids)
+            cv2.putText(frame, f"Short tracks ignored: {ignored_short}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+            # Re-draw with thickness
+            for x1, y1, x2, y2, disp_id in tracked_boxes:
+                length = track_lens.get(disp_id, 0)
+                color = get_color(disp_id)
+                thick = 2 if length >= 5 else 1
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, thick)
+
+        # TVM visual: accepted / rejected counter + colour
+        if tvm is not None:
+            cv2.putText(frame, f"Accepted: {accepted} | Rejected: {rejected}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+            # Draw original all_tracked with colour
+            for x1, y1, x2, y2, disp_id in all_tracked:
+                is_valid = disp_id in {v[4] for v in validated}
+                color = (0,255,0) if is_valid else (0,0,255)
+                thick = 2 if is_valid else 1
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, thick)
+
         cv2.line(frame, (line_x, 0), (line_x, h), (0, 0, 255), 3)
         cv2.putText(frame, f"{module_name} | Cross Count: {current_count}",
                     (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
@@ -327,12 +391,11 @@ def process_video(video_path, module_name, progress_bar):
     cap.release()
     writer.release()
 
-    # CL‑ID final count (from stored predictions)
+    # CL‑ID final count
     if module_name == "CL‑ID":
         pred_df = pd.DataFrame(pred_rows, columns=["frame","id","x","y","w","h","conf"])
         current_count = count_crossings_filtered(pred_df, line_x, min_length=5)
 
-    # Overwrite the count on the video? Not needed here, just return the final count
     if not out_path.exists() or out_path.stat().st_size == 0:
         st.error("Output video is empty. Tracking may have failed.")
         return None
@@ -351,19 +414,16 @@ module_choice = st.selectbox("Refinement Module", ["BGD", "CL‑ID", "TVM"], ind
 uploaded_file = st.file_uploader("Upload video", type=["mp4", "avi", "mov", "mkv"])
 
 if uploaded_file is not None:
-    # Save input video to temp
     temp_video = TEMP_DIR / f"input_{uploaded_file.name}"
     with open(temp_video, "wb") as f:
         f.write(uploaded_file.read())
 
-    # Show original video on the left
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Original Video")
         with open(temp_video, "rb") as f:
             st.video(f.read())
 
-    # Process automatically
     progress_bar = st.progress(0, text="Processing...")
     result = process_video(temp_video, module_choice, progress_bar)
     progress_bar.empty()

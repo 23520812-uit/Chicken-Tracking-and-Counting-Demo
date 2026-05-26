@@ -344,8 +344,7 @@ def process_video(video_path, module_name, progress_bar):
                             current_count = len(counted_ids)
                         cross_states[disp_id] = curr_side
 
-        # TVM filtering
-        all_tracked = tracked_boxes  
+        all_tracked = tracked_boxes 
         if tvm is not None:
             validated = tvm.filter(all_tracked)
             accepted = len(validated)
@@ -362,15 +361,12 @@ def process_video(video_path, module_name, progress_bar):
                         counted_ids.add(disp_id)
                         current_count = len(counted_ids)
                     cross_states[disp_id] = curr_side
-
-            tracked_boxes = validated      
+                    
         else:
             accepted = rejected = 0
 
-        # ---- Draw visual elements ----
         frame = draw_tracks(frame, tracked_boxes, trajectories, unique_ids)
 
-        # BGD visual: three lines
         if module_name == "BGD":
             cv2.line(frame, (left_bound, 0), (left_bound, h), (0, 0, 0), 3)
             cv2.line(frame, (line_x, 0), (line_x, h), (0, 0, 255), 3)
@@ -380,7 +376,6 @@ def process_video(video_path, module_name, progress_bar):
             cv2.putText(frame, "BIRTH / DEATH", (right_bound + 5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 1)
             cv2.putText(frame, "GROWTH", (left_bound + 5, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 1)
 
-        # CL‑ID visual: short track counter + thickness
         if module_name == "CL‑ID" and pred_rows:
             temp_df = pd.DataFrame(pred_rows, columns=["frame","id","x","y","w","h","conf"])
             track_lens = temp_df.groupby("id").size()
@@ -389,18 +384,17 @@ def process_video(video_path, module_name, progress_bar):
             ignored_short = len(all_ids - valid_ids)
             cv2.putText(frame, f"Short tracks ignored: {ignored_short}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-            # Re-draw with thickness
+
             for x1, y1, x2, y2, disp_id in tracked_boxes:
                 length = track_lens.get(disp_id, 0)
                 color = get_color(disp_id)
                 thick = 2 if length >= 5 else 1
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, thick)
 
-        # TVM visual: accepted / rejected counter + colour
         if tvm is not None:
             cv2.putText(frame, f"Accepted: {accepted} | Rejected: {rejected}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-            # Draw original all_tracked with colour
+
             for x1, y1, x2, y2, disp_id in all_tracked:
                 is_valid = disp_id in {v[4] for v in validated}
                 color = (0,255,0) if is_valid else (0,0,255)
@@ -422,7 +416,6 @@ def process_video(video_path, module_name, progress_bar):
     cap.release()
     writer.release()
 
-    # CL‑ID final count
     if module_name == "CL‑ID":
         pred_df = pd.DataFrame(pred_rows, columns=["frame","id","x","y","w","h","conf"])
         current_count = count_crossings_filtered(pred_df, line_x, min_length=5)
